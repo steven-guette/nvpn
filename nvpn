@@ -1,0 +1,314 @@
+#!/bin/bash
+
+# Affiche un message dont la coloration est déterminée par son type.
+display_message() {
+    local -r message_type=$1
+    case $message_type in
+        "error")
+            echo -e "\033[0;31m$2\033[0m"
+        ;;
+        "warning")
+            echo -e "\033[0;33m$2\033[0m"
+        ;;
+        "validation")
+            echo -e "\033[0;32m$2\033[0m"
+        ;;
+    esac
+}
+
+# Affiche le descriptif du script, ses options disponibles et les droits nécessaires à son utilisation.
+display_help() {
+    echo -e "\n\033[0;36m\033[1mnvpn permet d'effectuer les actions les plus courantes de l'application NordVPN." \
+            "\nEn outre, il permet également de réinitialiser les DNS à utiliser lors de la déconnexion au VPN.\033[0m" \
+            "\n\n\033[0;36mOptions disponibles :\033[0m" \
+            "\n--enabled : Active tous les paramètres indiqués à la suite de cette option." \
+            "\n--disabled : Désactive tous les paramètres indiqués à la suite de cette option." \
+            "\n--protocol : Permet de modifier le protocole à utiliser (TCP ou UDP)." \
+            "\n--technology : Permet de modifier la technologie à utiliser (NORDLYNX ou OPENVPN)." \
+            "\n--status : Affiche le status actuel de la connexion au VPN." \
+            "\n-s : Affiche l'état actuel des différents paramètres du VPN." \
+            "\n-c : Permet de se connecter à un serveur, l'indicatif du pays peux être ajouté en argument." \
+            "\n-d : Permet de se déconnecter au serveur actuel et de réinitialiser les paramètres DNS (SUDO ONLY)." \
+            "\033[0;33m\033[1m" \
+            "\n\nLa réinitialisation des paramètres DNS nécessitent que vous ayez accès aux commandes sudo suivantes :" \
+            "\033[0m\033[0;35m" \
+            "\n- truncate\n- tee\033[0m\n"
+}
+
+# Récupère les options disponibles avec NordVPN, les formate puis les affiche.
+display_settings_options() {
+    local -A connectivity_options
+    local -A basics_options
+
+    while IFS=: read -r key value; do
+        value=$(echo "$value" | tr -d ' ')
+        if [[ "$value" =~ ^(enabled|disabled)$ ]]; then
+            basics_options["$key"]="$value"
+        else
+            connectivity_options["$key"]="$value"
+        fi
+    done < <(nordvpn settings)
+
+    for c_option in "${!connectivity_options[@]}"; do
+        echo -e "$c_option = ${connectivity_options["$c_option"]}"
+    done
+
+    for b_option in "${!basics_options[@]}"; do
+        status="${basics_options["$b_option"]}"
+        if [ "$status" = enabled ]; then
+            status="\033[0;32m$status\033[0m"
+        else
+            status="\033[0;31m$status\033[0m"
+        fi
+        echo -e "$b_option = $status"
+    done
+}
+
+# Affiche l'état de la connection à NordVPN.
+display_connection() {
+    nordvpn status
+}
+
+# Vérifie si le protocole sélectionné est disponible sur NordVPN.
+is_valid_protocol() {
+    local -r protocol=${1,,}
+    if [[ "$protocol" =~ ^(tcp|udp)$ ]]; then
+        echo true
+    else
+        echo false
+    fi
+}
+
+# Vérifie si la technologie sélectionnée est disponible sur NordVPN.
+is_valid_technology() {
+    local -r technology=${1,,}
+    if [[ "$technology" =~ ^(openvpn|nordlynx)$ ]]; then
+        echo true
+    else
+        echo false
+    fi
+}
+
+is_available_command() {
+    if command -v "$1" > /dev/null 2<&1; then
+        echo true
+    else
+        echo false
+    fi
+}
+
+check_dependencies() {
+    local -ar dependencies=(truncate tee)
+    local -a dependencies_needed=()
+
+    if [ "$(is_available_command nordvpn)" = false ]; then
+        display_message error "NordVPN n'est pas installé sur cette machine."
+        exit 1
+    else
+        for dependency in "${dependencies[@]}"; do
+            if [ "$(is_available_command "$dependency")" = false ]; then
+                dependencies_needed+=("$dependency")
+            fi
+        done
+
+        if [ "${#dependencies_needed}" -gt 0 ]; then
+            echo "Les dépendances suivantes sont requises pour utiliser nvpn :"
+            for dependency in "${dependencies_needed[@]}"; do
+                echo "- $dependency"
+            done
+
+            echo
+            read -rf "Souhaitez-vous les installer maintenant ? (oui/non) " install_now
+
+            install_now="${install_now,,}"
+            if [[ "$install_now" =~ ^(oui|o|yes|y)$ ]]; then
+                if sudo -l | grep -q 'apt-get -y install'; then
+                    sudo apt-get -y install "${dependencies_needed[*]}"
+                elif sudo -l | grep -q 'apt-get install'; then
+                    sudo apt-get install "${dependencies_needed[*]}"
+                else
+                    display_message warning "Vous n'avez pas les droits nécessaires à l'installation des paquets."
+                fi
+            else
+                exit 0
+            fi
+        fi
+    fi
+}
+
+# Vérifie que l'utilisateur courant ai les droits nécessaires pour modifier les adresses DNS à utiliser.
+check_sudo_cmd_access() {
+    local tmp_file=~/check-sudo-cmd.tmp
+    local msg_test='check your sudo access'
+
+    if echo "$msg_test" | sudo tee -a "$tmp_file" > /dev/null 2>&1 && sudo truncate -s 0 "$tmp_file"; then
+        echo true
+    else
+        echo false
+    fi
+    rm -f "$tmp_file"
+}
+
+#=====================================================================================================
+# Connecte NordVPN à l'un de ses serveurs et permute Kill Switch sur enabled.
+#=====================================================================================================
+# Si country est renseigné avec une valeur correcte, NordVPN sélectionnera son serveur en conséquence.
+# Sinon, NordVPN se connectera à un serveur aléatoire.
+#=====================================================================================================
+connect() {
+    local -r country=$1
+    if [ -n "$country" ]; then
+        if ! nordvpn c "$country"; then
+            nordvpn c
+        fi
+    else
+        nordvpn c
+    fi
+    swap_killswitch_option enabled
+}
+
+# Déconnecte NordVPN, réinitialise les DNS et permute Kill Switch sur disabled.
+disconnect() {
+    nordvpn d
+    set_dns_file
+    swap_killswitch_option disabled
+}
+
+# Si nécessaire, permute le Kill Switch de NordVPN sur la valeur souhaitée.
+swap_killswitch_option() {
+    local -r status_needed=$1
+    if [ "${SETTINGS_OPTIONS["killswitch"]}" != "$status_needed" ]; then
+        nordvpn s killswitch "$status_needed"
+    fi
+}
+
+# Récupère et formate les options activables proposées par NordVPN.
+get_settings_options() {
+    local -A settings_options
+    while IFS=: read -r key value; do
+        value=$(echo "$value" | tr -d ' ')
+        if [[ "$value" =~ ^(enabled|disabled)$ ]]; then
+            key=$(echo "$key" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+            settings_options["$key"]="$value"
+        fi
+    done < <(nordvpn settings)
+    declare -p settings_options
+}
+
+#==========================================================================
+# Modifie la valeur d'une ou plusieurs options proposées par NordVPN.
+#==========================================================================
+# switch_value : Contient la valeur à appliquer, enabled ou disabled.
+# options : La liste des options à modifier avec la valeur de switch_value.
+#==========================================================================
+set_options_values() {
+    local -r switch_value=$1
+    local -a options=()
+
+    for element in "${@:2}"; do
+        options+=("$element")
+    done
+
+    for option in "${options[@]}"; do
+        nordvpn s "$option" "$switch_value"
+    done
+}
+
+# Modifie le protocole utilisé par NordVPN.
+set_protocol_value() {
+    if [ "$(is_valid_protocol "$1")" = true ]; then
+        nordvpn s protocol "$1"
+    else
+        display_message warning "Les protocoles disponibles sont UPD et TCP."
+    fi
+}
+
+# Modifie la technologie utilisée par NordVPN.
+set_technology_value() {
+    if [ "$(is_valid_technology "$1")" = true ]; then
+        nordvpn s technology "$1"
+    else
+        display_message warning "Les technologies disponibles sont OPENVPN et NORDLYNX."
+    fi
+}
+
+# Remplace les DNS imposés par NordVPN par ceux du serveur DNS sélectionné dans DNS_SELECTED.
+set_dns_file() {
+    if [ -z "$DNS_SELECTED" ]; then
+        display_message warning "Les adresses DNS ne seront pas modifiées car aucun serveur n'a été sélectionné."
+    elif [ -z "${DNS_SERVERS["$DNS_SELECTED"]}" ]; then
+        display_message warning "Les adresses DNS ne seront pas modifiées car le serveur sélectionné n'est pas pris en charge."
+    elif [ "$(check_sudo_cmd_access)" = false ]; then
+        display_message warning "Les adresses DNS ne seront pas modifiées car vous n'avez pas les droits nécessaires."
+    else
+        local -r filepath=/etc/resolv.conf
+        IFS=' ' read -ra dns_ips <<< "${DNS_SERVERS["$DNS_SELECTED"]}"
+
+        if [ -f "$filepath" ]; then
+            sudo truncate -s 0 "$filepath"
+        fi
+
+        for addr in "${dns_ips[@]}"; do
+            echo "nameserver $addr" | sudo tee -a "$filepath" > /dev/null 2<&1
+        done
+
+        display_message validation "Les paramètres DNS ont été réinitialisés."
+    fi
+}
+
+check_dependencies
+
+#================================================================================
+# Liste des serveurs DNS à utiliser lorsque NordVPN n'est pas actif.
+#================================================================================
+# CLOUDFLARE est le serveur DNS par défaut.
+#
+# Pour utiliser d'autres serveurs non listés ou intégrer votre propre serveur DNS,
+# il vous suffit de l'ajouter à la liste et de le sélectionner.
+#
+# Si vous ne souhaitez pas utiliser la réinitialisation des DNS,
+# mettez 'declare -ar DNS_SELECTED=CLOUDFLARE' en commentaire.
+#================================================================================
+declare -ar DNS_SELECTED=CLOUDFLARE
+declare -Ar DNS_SERVERS=( \
+    [GOOGLE]='8.8.8.8 8.8.4.4' \
+    [CLOUDFLARE]='1.1.1.1 1.0.0.1' \
+    [OPENDNS]='208.67.222.222 208.67.220.220' \
+)
+
+# Récupération des différentes options activables et leur status courant.
+SETTINGS_OPTIONS=$(get_settings_options); declare -Ar SETTINGS_OPTIONS="${SETTINGS_OPTIONS#*=}"
+
+cmd="${1,,}"
+case $cmd in
+    "--help" | "-h")
+        display_help
+    ;;
+    "--enabled" | "--disabled")
+        if [ -n "$2" ]; then
+            switch_value="${1:2}"; shift 1
+            set_options_values "$switch_value" "$@"
+        fi
+    ;;
+    "--protocol")
+        set_protocol_value "$2"
+    ;;
+    "--technology")
+        set_technology_value "$2"
+    ;;
+    "--status")
+        display_connection
+    ;;
+    "-s")
+        display_settings_options
+    ;;
+    "-c")
+        connect "$2"
+    ;;
+    "-d")
+        disconnect
+    ;;
+    *)
+        display_message warning "La commande saisie n'est pas reconnue.\nSaisissez 'nvpn --help' pour plus d'informations."
+    ;;
+esac

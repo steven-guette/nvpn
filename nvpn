@@ -13,6 +13,9 @@ display_message() {
         "validation")
             echo -e "\033[0;32m$2\033[0m"
         ;;
+        "info")
+            echo -e "\033[0;36m$2\033[0m"
+        ;;
     esac
 }
 
@@ -73,9 +76,9 @@ display_connection() {
 is_valid_protocol() {
     local -r protocol=${1,,}
     if [[ "$protocol" =~ ^(tcp|udp)$ ]]; then
-        echo true
+        return 0
     else
-        echo false
+        return 1
     fi
 }
 
@@ -83,30 +86,32 @@ is_valid_protocol() {
 is_valid_technology() {
     local -r technology=${1,,}
     if [[ "$technology" =~ ^(openvpn|nordlynx)$ ]]; then
-        echo true
+        return 0
     else
-        echo false
+        return 1
     fi
 }
 
+# Vérifie si une commande est disponible sur le système.
 is_available_command() {
     if command -v "$1" > /dev/null 2<&1; then
-        echo true
+        return 0
     else
-        echo false
+        return 1
     fi
 }
 
+# Contrôle que toutes les dépendances soient installées.
 check_dependencies() {
     local -ar dependencies=(truncate tee)
     local -a dependencies_needed=()
 
-    if [ "$(is_available_command nordvpn)" = false ]; then
+    if ! is_available_command nordvpn; then
         display_message error "NordVPN n'est pas installé sur cette machine."
         exit 1
     else
         for dependency in "${dependencies[@]}"; do
-            if [ "$(is_available_command "$dependency")" = false ]; then
+            if ! is_available_command "$dependency"; then
                 dependencies_needed+=("$dependency")
             fi
         done
@@ -118,7 +123,7 @@ check_dependencies() {
             done
 
             echo
-            read -rf "Souhaitez-vous les installer maintenant ? (oui/non) " install_now
+            read -rp "Souhaitez-vous les installer maintenant ? (oui/non) " install_now
 
             install_now="${install_now,,}"
             if [[ "$install_now" =~ ^(oui|o|yes|y)$ ]]; then
@@ -127,7 +132,7 @@ check_dependencies() {
                 elif sudo -l | grep -q 'apt-get install'; then
                     sudo apt-get install "${dependencies_needed[*]}"
                 else
-                    display_message warning "Vous n'avez pas les droits nécessaires à l'installation des paquets."
+                    display_message warning "Vous n'avez pas les droits nécessaires à l'installation des paquets manquants."
                 fi
             else
                 exit 0
@@ -142,9 +147,9 @@ check_sudo_cmd_access() {
     local msg_test='check your sudo access'
 
     if echo "$msg_test" | sudo tee -a "$tmp_file" > /dev/null 2>&1 && sudo truncate -s 0 "$tmp_file"; then
-        echo true
+        return 0
     else
-        echo false
+        return 1
     fi
     rm -f "$tmp_file"
 }
@@ -216,7 +221,7 @@ set_options_values() {
 
 # Modifie le protocole utilisé par NordVPN.
 set_protocol_value() {
-    if [ "$(is_valid_protocol "$1")" = true ]; then
+    if is_valid_protocol "$1"; then
         nordvpn s protocol "$1"
     else
         display_message warning "Les protocoles disponibles sont UPD et TCP."
@@ -225,7 +230,7 @@ set_protocol_value() {
 
 # Modifie la technologie utilisée par NordVPN.
 set_technology_value() {
-    if [ "$(is_valid_technology "$1")" = true ]; then
+    if is_valid_technology "$1"; then
         nordvpn s technology "$1"
     else
         display_message warning "Les technologies disponibles sont OPENVPN et NORDLYNX."
@@ -238,7 +243,7 @@ set_dns_file() {
         display_message warning "Les adresses DNS ne seront pas modifiées car aucun serveur n'a été sélectionné."
     elif [ -z "${DNS_SERVERS["$DNS_SELECTED"]}" ]; then
         display_message warning "Les adresses DNS ne seront pas modifiées car le serveur sélectionné n'est pas pris en charge."
-    elif [ "$(check_sudo_cmd_access)" = false ]; then
+    elif ! check_sudo_cmd_access; then
         display_message warning "Les adresses DNS ne seront pas modifiées car vous n'avez pas les droits nécessaires."
     else
         local -r filepath=/etc/resolv.conf
@@ -309,6 +314,7 @@ case $cmd in
         disconnect
     ;;
     *)
-        display_message warning "La commande saisie n'est pas reconnue.\nSaisissez 'nvpn --help' pour plus d'informations."
+        display_message warning "La commande saisie n'est pas reconnue."
+        display_message info "Saisissez 'nvpn --help' pour plus d'informations."
     ;;
 esac

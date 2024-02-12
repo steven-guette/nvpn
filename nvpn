@@ -166,6 +166,8 @@ connect() {
         if ! nordvpn c "$country"; then
             nordvpn c
         fi
+    elif [ -n "$DEFAULT_VPN_SERVER" ]; then
+        nordvpn c "$DEFAULT_VPN_SERVER"
     else
         nordvpn c
     fi
@@ -177,6 +179,17 @@ disconnect() {
     nordvpn d
     set_dns_file
     swap_killswitch_option disabled
+}
+
+# Relance la connexion lors de la modification de certains paramètres nécessitant une reconnexion.
+restart_connection() {
+    local -r server=$(nordvpn status | grep -i hostname | awk '{print $2}')
+    if [ -n "$server" ]; then
+        nordvpn d
+        connect "${server:0:2}"
+    else
+        connect
+    fi
 }
 
 # Si nécessaire, permute le Kill Switch de NordVPN sur la valeur souhaitée.
@@ -209,14 +222,25 @@ get_settings_options() {
 set_options_values() {
     local -r switch_value=$1
     local -a options=()
+    local restart_needed=false
 
     for element in "${@:2}"; do
         options+=("$element")
     done
 
     for option in "${options[@]}"; do
-        nordvpn s "$option" "$switch_value"
+        result=$(nordvpn s "$option" "$switch_value")
+        if echo "$result" | grep -q reconnect; then
+            restart_needed=true
+            display_message validation "$(echo "$result" | grep -v reconnect)"
+        else
+            display_message validation "$result"
+        fi
     done
+
+    if [ "$restart_needed" = true ]; then
+        restart_connection
+    fi
 }
 
 # Modifie le protocole utilisé par NordVPN.
@@ -280,6 +304,9 @@ declare -Ar DNS_SERVERS=( \
     [CLOUDFLARE]='1.1.1.1 1.0.0.1' \
     [OPENDNS]='208.67.222.222 208.67.220.220' \
 )
+
+# Serveur NordVPN à utiliser par défaut si il n'est pas indiqué lors de la connexion.
+DEFAULT_VPN_SERVER=CH
 
 # Récupération des différentes options activables et leur status courant.
 SETTINGS_OPTIONS=$(get_settings_options); declare -Ar SETTINGS_OPTIONS="${SETTINGS_OPTIONS#*=}"

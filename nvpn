@@ -72,6 +72,16 @@ display_connection() {
     nordvpn status
 }
 
+# Vérifie si le serveur utilisé est un serveur spécial.
+is_special_server() {
+    local -r server_name=$1
+    if [[ ! "$server_name" =~ ^[a-z]{2}[0-9]+$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Vérifie si le protocole sélectionné est disponible sur NordVPN.
 is_valid_protocol() {
     local -r protocol=${1,,}
@@ -186,7 +196,11 @@ restart_connection() {
     local -r server=$(nordvpn status | grep -i hostname | awk '{print $2}')
     if [ -n "$server" ]; then
         nordvpn d
-        connect "${server:0:2}"
+        if is_special_server "$server"; then
+            connect "$server"
+        else
+            connect "${server:0:2}"
+        fi
     else
         connect
     fi

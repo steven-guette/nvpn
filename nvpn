@@ -168,7 +168,8 @@ check_sudo_cmd_access() {
 # Connecte NordVPN à l'un de ses serveurs et permute Kill Switch sur enabled.
 #=====================================================================================================
 # Si country est renseigné avec une valeur correcte, NordVPN sélectionnera son serveur en conséquence.
-# Sinon, NordVPN se connectera à un serveur aléatoire.
+# Sinon si un serveur par défaut est renseigné, il tentera de se connecter dessus.
+# Sinon, il se connectera à un serveur aléatoire.
 #=====================================================================================================
 connect() {
     local -r country=$1
@@ -177,7 +178,9 @@ connect() {
             nordvpn c
         fi
     elif [ -n "$DEFAULT_VPN_SERVER" ]; then
-        nordvpn c "$DEFAULT_VPN_SERVER"
+        if ! nordvpn c "$DEFAULT_VPN_SERVER"; then
+            nordvpn c
+        fi
     else
         nordvpn c
     fi

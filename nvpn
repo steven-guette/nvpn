@@ -74,8 +74,7 @@ display_connection() {
 
 # Vérifie si le serveur utilisé est un serveur spécial.
 is_special_server() {
-    local -r server_name=$1
-    if [[ ! "$server_name" =~ ^[a-z]{2}[0-9]+$ ]]; then
+    if [[ ! "$1" =~ ^([a-z]{2}[0-9]+)$ ]]; then
         return 0
     else
         return 1
@@ -157,11 +156,11 @@ check_sudo_cmd_access() {
     local msg_test='check your sudo access'
 
     if echo "$msg_test" | sudo tee -a "$tmp_file" > /dev/null 2>&1 && sudo truncate -s 0 "$tmp_file"; then
+        rm -f "$tmp_file"
         return 0
     else
         return 1
     fi
-    rm -f "$tmp_file"
 }
 
 #=====================================================================================================
@@ -189,21 +188,26 @@ connect() {
 
 # Déconnecte NordVPN, réinitialise les DNS et permute Kill Switch sur disabled.
 disconnect() {
-    nordvpn d
+    local -r disconnect_msg=$(nordvpn d)
+    display_message validation "$(echo "$disconnect_msg" | grep -v rate)"
     set_dns_file
     swap_killswitch_option disabled
 }
 
 # Relance la connexion lors de la modification de certains paramètres nécessitant une reconnexion.
 restart_connection() {
-    local -r server=$(nordvpn status | grep -i hostname | awk '{print $2}')
+    local server
+    server=$(nordvpn status | grep -i hostname | awk '{print $2}' | cut -d'.' -f1)
+
     if [ -n "$server" ]; then
-        nordvpn d
         if is_special_server "$server"; then
-            connect "$server"
+            server=$(get_special_server_name "$server")
         else
-            connect "${server:0:2}"
+            server=${server:0:2}
         fi
+
+        nordvpn d | grep -v rate
+        connect "$server"
     else
         connect
     fi
@@ -228,6 +232,18 @@ get_settings_options() {
         fi
     done < <(nordvpn settings)
     declare -p settings_options
+}
+
+# Récupère le nom d'un serveur spécial.
+get_special_server_name() {
+    local -r server=${1,,}
+    if [[ "$server" =~ ^([a-z]{2}\-[a-z]{2}[0-9]+)$ ]]; then
+        echo "${SPECIALS_VPN_SERVERS[double]}"
+    elif echo "$server" | grep -q onion; then
+        echo "${SPECIALS_VPN_SERVERS[onion]}"
+    else
+        echo "$DEFAULT_VPN_SERVER"
+    fi
 }
 
 #==========================================================================
@@ -290,12 +306,16 @@ set_dns_file() {
         local -r filepath=/etc/resolv.conf
         IFS=' ' read -ra dns_ips <<< "${DNS_SERVERS["$DNS_SELECTED"]}"
 
-        if [ -f "$filepath" ]; then
-            sudo truncate -s 0 "$filepath"
+        if [ -f "$filepath" ] && ! sudo truncate -s 0 "$filepath"; then
+            display_message error "La modification des paramètres DNS a échouée."
+            exit 1
         fi
 
         for addr in "${dns_ips[@]}"; do
-            echo "nameserver $addr" | sudo tee -a "$filepath" > /dev/null 2<&1
+            if ! echo "nameserver $addr" | sudo tee -a "$filepath" > /dev/null 2<&1; then
+                display_message error "La modification des paramètres DNS a échouée."
+                exit 1
+            fi
         done
 
         display_message validation "Les paramètres DNS ont été réinitialisés."
@@ -322,8 +342,14 @@ declare -Ar DNS_SERVERS=( \
     [OPENDNS]='208.67.222.222 208.67.220.220' \
 )
 
+# La liste des serveurs spéciaux de NordVPN.
+declare -Ar SPECIALS_VPN_SERVERS=( \
+    [double]=double_vpn \
+    [onion]=onion_over_vpn \
+)
+
 # Serveur NordVPN à utiliser par défaut si il n'est pas indiqué lors de la connexion.
-DEFAULT_VPN_SERVER=CH
+DEFAULT_VPN_SERVER=FR
 
 # Récupération des différentes options activables et leur status courant.
 SETTINGS_OPTIONS=$(get_settings_options); declare -Ar SETTINGS_OPTIONS="${SETTINGS_OPTIONS#*=}"
